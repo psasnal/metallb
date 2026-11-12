@@ -5,6 +5,7 @@ package layer2
 import (
 	"maps"
 	"net"
+	"net/netip"
 	"os"
 	"regexp"
 	"slices"
@@ -21,7 +22,7 @@ import (
 // uses. It exists so the ARP responders can be replaced with fakes in tests.
 type arpResponder interface {
 	Interface() string
-	Gratuitous(ip net.IP) error
+	Gratuitous(ip netip.Addr) error
 	Close() error
 }
 
@@ -29,9 +30,9 @@ type arpResponder interface {
 // uses. It exists so the NDP responders can be replaced with fakes in tests.
 type ndpResponder interface {
 	Interface() string
-	Gratuitous(ip net.IP) error
-	Watch(ip net.IP) error
-	Unwatch(ip net.IP) error
+	Gratuitous(ip netip.Addr) error
+	Watch(ip netip.Addr) error
+	Unwatch(ip netip.Addr) error
 	Close() error
 }
 
@@ -135,7 +136,12 @@ func (a *Announce) updateInterfaces() {
 			if !ok {
 				continue
 			}
-			if ipaddr.IP.To4() != nil || !ipaddr.IP.IsLinkLocalUnicast() {
+			ip, ok := netip.AddrFromSlice(ipaddr.IP)
+			if !ok {
+				continue
+			}
+			ip = ip.Unmap()
+			if ip.Is4() || !ip.IsLinkLocalUnicast() {
 				continue
 			}
 			keepNDP[ifi.Index] = true
@@ -289,7 +295,7 @@ func (a *Announce) gratuitous(adv IPAdvertisement) {
 		return
 	}
 
-	if ip.To4() != nil {
+	if ip.Is4() {
 		for _, client := range a.arps {
 			if !adv.matchInterface(client.Interface()) {
 				level.Debug(a.logger).Log("op", "gratuitousAnnounce", "skip interfaces", client.Interface())
@@ -312,13 +318,13 @@ func (a *Announce) gratuitous(adv IPAdvertisement) {
 	}
 }
 
-func (a *Announce) shouldAnnounce(ip net.IP, intf string) dropReason {
+func (a *Announce) shouldAnnounce(ip netip.Addr, intf string) dropReason {
 	a.RLock()
 	defer a.RUnlock()
 	ipFound := false
 	for _, ipAdvertisements := range a.ips {
 		for _, i := range ipAdvertisements {
-			if i.ip.Equal(ip) {
+			if i.ip == ip {
 				ipFound = true
 				if i.matchInterface(intf) {
 					return dropReasonNone
@@ -343,7 +349,7 @@ func (a *Announce) SetBalancer(name string, adv IPAdvertisement) {
 	// times, so just no-op any subsequent requests.
 	if ipAdvertisements, ok := a.ips[name]; ok {
 		for i := range ipAdvertisements {
-			if adv.ip.Equal(a.ips[name][i].ip) {
+			if adv.ip == a.ips[name][i].ip {
 				a.ips[name][i] = adv // override in case the interface list changed
 				return
 			}

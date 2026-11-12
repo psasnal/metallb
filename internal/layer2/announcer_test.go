@@ -3,7 +3,7 @@
 package layer2
 
 import (
-	"net"
+	"net/netip"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -23,7 +23,7 @@ func Test_SetBalancer_AddsToAnnouncedServices(t *testing.T) {
 		{
 			name: "foo",
 			adv: IPAdvertisement{
-				ip:            net.IPv4(192, 168, 1, 20),
+				ip:            netip.MustParseAddr("192.168.1.20"),
 				interfaces:    sets.Set[string]{},
 				allInterfaces: true,
 			},
@@ -31,7 +31,7 @@ func Test_SetBalancer_AddsToAnnouncedServices(t *testing.T) {
 		{
 			name: "foo",
 			adv: IPAdvertisement{
-				ip:            net.ParseIP("1000::1"),
+				ip:            netip.MustParseAddr("1000::1"),
 				interfaces:    sets.New("eth0"),
 				allInterfaces: true,
 			},
@@ -39,7 +39,7 @@ func Test_SetBalancer_AddsToAnnouncedServices(t *testing.T) {
 		{
 			name: "bar",
 			adv: IPAdvertisement{
-				ip:            net.IPv4(192, 168, 1, 20),
+				ip:            netip.MustParseAddr("192.168.1.20"),
 				interfaces:    sets.New("eth1"),
 				allInterfaces: false,
 			},
@@ -64,8 +64,8 @@ func Test_SetBalancer_AddsToAnnouncedServices(t *testing.T) {
 }
 
 func Test_MergedAdvertisementsPerIP(t *testing.T) {
-	ipA := net.IPv4(192, 168, 1, 100)
-	ipB := net.IPv4(192, 168, 1, 101)
+	ipA := netip.MustParseAddr("192.168.1.100")
+	ipB := netip.MustParseAddr("192.168.1.101")
 
 	tests := []struct {
 		name string
@@ -156,9 +156,9 @@ func Test_SendPeriodicGratuitous_IteratesEveryAnnouncedIP(t *testing.T) {
 	// path instead of only the merge helper.
 	arp := newFakeARPResponder("eth0")
 	ndp := newFakeNDPResponder("eth0")
-	ipV4 := net.IPv4(192, 168, 1, 20)
-	ipV6a := net.ParseIP("1000::1")
-	ipV6b := net.ParseIP("1000::2")
+	ipV4 := netip.MustParseAddr("192.168.1.20")
+	ipV6a := netip.MustParseAddr("1000::1")
+	ipV6b := netip.MustParseAddr("1000::2")
 	announce := &Announce{
 		arps: map[int]arpResponder{0: arp},
 		ndps: map[int]ndpResponder{0: ndp},
@@ -210,7 +210,7 @@ func assertGratuitousCounts(t *testing.T, proto string, got, want map[string]int
 // passed to Gratuitous.
 type fakeARPResponder struct {
 	intf       string
-	gratuitous []net.IP
+	gratuitous []netip.Addr
 }
 
 func newFakeARPResponder(intf string) *fakeARPResponder {
@@ -219,7 +219,7 @@ func newFakeARPResponder(intf string) *fakeARPResponder {
 
 func (f *fakeARPResponder) Interface() string { return f.intf }
 
-func (f *fakeARPResponder) Gratuitous(ip net.IP) error {
+func (f *fakeARPResponder) Gratuitous(ip netip.Addr) error {
 	f.gratuitous = append(f.gratuitous, ip)
 	return nil
 }
@@ -238,7 +238,7 @@ func (f *fakeARPResponder) gratuitousCalls() map[string]int {
 // passed to Gratuitous.
 type fakeNDPResponder struct {
 	intf       string
-	gratuitous []net.IP
+	gratuitous []netip.Addr
 }
 
 func newFakeNDPResponder(intf string) *fakeNDPResponder {
@@ -247,14 +247,14 @@ func newFakeNDPResponder(intf string) *fakeNDPResponder {
 
 func (f *fakeNDPResponder) Interface() string { return f.intf }
 
-func (f *fakeNDPResponder) Gratuitous(ip net.IP) error {
+func (f *fakeNDPResponder) Gratuitous(ip netip.Addr) error {
 	f.gratuitous = append(f.gratuitous, ip)
 	return nil
 }
 
-func (f *fakeNDPResponder) Watch(net.IP) error   { return nil }
-func (f *fakeNDPResponder) Unwatch(net.IP) error { return nil }
-func (f *fakeNDPResponder) Close() error         { return nil }
+func (f *fakeNDPResponder) Watch(netip.Addr) error   { return nil }
+func (f *fakeNDPResponder) Unwatch(netip.Addr) error { return nil }
+func (f *fakeNDPResponder) Close() error             { return nil }
 
 func (f *fakeNDPResponder) gratuitousCalls() map[string]int {
 	m := map[string]int{}

@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
+	"net/netip"
 	"reflect"
 	"sort"
 	"strconv"
@@ -232,7 +232,7 @@ func (sm *sessionManager) updateConfig() error {
 				prefixes:  make(map[string]string),
 				vrf:       s.VRFName,
 			}
-			if s.RouterID != nil {
+			if s.RouterID.IsValid() {
 				rout.routerID = s.RouterID.String()
 			}
 			routers[routerName] = rout
@@ -288,7 +288,8 @@ func (sm *sessionManager) updateConfig() error {
 			}
 		}
 
-		neighborFamily := ipfamily.ForAddress(net.ParseIP(s.PeerAddress))
+		addr, _ := netip.ParseAddr(s.PeerAddress)
+		neighborFamily := ipfamily.ForAddress(addr)
 
 		if s.PeerInterface != "" || s.DualStackAddressFamily {
 			neighborFamily = ipfamily.DualStack
@@ -301,7 +302,7 @@ func (sm *sessionManager) updateConfig() error {
 		prefixesForLocalPref := map[uint32][]string{}
 		prefixesForAsPathPrepend := map[uint8][]string{}
 		for _, adv := range s.advertised {
-			family := ipfamily.ForAddress(adv.Prefix.IP)
+			family := ipfamily.ForAddress(adv.Prefix.Addr())
 
 			if neighborFamily != family &&
 				neighborFamily != ipfamily.DualStack {

@@ -5,7 +5,7 @@ package frr
 import (
 	"encoding/json"
 	"fmt"
-	"net"
+	"net/netip"
 	"sort"
 	"strconv"
 
@@ -13,7 +13,7 @@ import (
 )
 
 type Neighbor struct {
-	IP             net.IP
+	IP             netip.Addr
 	VRF            string
 	Connected      bool
 	LocalAS        string
@@ -25,8 +25,8 @@ type Neighbor struct {
 }
 
 type Route struct {
-	Destination *net.IPNet
-	NextHops    []net.IP
+	Destination netip.Prefix
+	NextHops    []netip.Addr
 	LocalPref   uint32
 	Origin      string
 }
@@ -115,8 +115,8 @@ func ParseNeighbour(vtyshRes string) (*Neighbor, error) {
 		return nil, errors.New("no peers were returned")
 	}
 	for k, n := range res {
-		ip := net.ParseIP(k)
-		if ip == nil {
+		ip, err := netip.ParseAddr(k)
+		if err != nil {
 			return nil, fmt.Errorf("failed to parse %s as ip", ip)
 		}
 		connected := true
@@ -152,8 +152,8 @@ func ParseNeighbours(vtyshRes string) ([]*Neighbor, error) {
 
 	res := make([]*Neighbor, 0)
 	for k, n := range toParse {
-		ip := net.ParseIP(k)
-		if ip == nil {
+		ip, err := netip.ParseAddr(k)
+		if err != nil {
 			return nil, fmt.Errorf("failed to parse %s as ip", ip)
 		}
 		connected := true
@@ -189,29 +189,30 @@ func ParseRoutes(vtyshRes string) (map[string]Route, error) {
 
 	res := make(map[string]Route)
 	for k, frrRoutes := range toParse.Routes {
-		destIP, dest, err := net.ParseCIDR(k)
+		dest, err := netip.ParsePrefix(k)
 		if err != nil {
 			return nil, errors.Join(err, fmt.Errorf("failed to parse cidr for %s", k))
 		}
+		destIP := dest.Addr()
 
 		r := Route{
 			Destination: dest,
-			NextHops:    make([]net.IP, 0),
+			NextHops:    make([]netip.Addr, 0),
 		}
 		for _, n := range frrRoutes {
 			r.LocalPref = n.LocalPref
 			r.Origin = n.Origin
 		out:
 			for _, h := range n.Nexthops {
-				ip := net.ParseIP(h.IP)
-				if ip == nil {
+				ip, err := netip.ParseAddr(h.IP)
+				if err != nil {
 					return nil, fmt.Errorf("failed to parse ip %s", h.IP)
 				}
-				if ip.To4() == nil && h.Scope == "link-local" {
+				if !ip.Unmap().Is4() && h.Scope == "link-local" {
 					continue
 				}
 				for _, current := range r.NextHops {
-					if ip.Equal(current) {
+					if ip == current {
 						continue out
 					}
 				}
