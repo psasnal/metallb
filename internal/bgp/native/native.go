@@ -227,7 +227,11 @@ func (s *session) connect() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
-	conn, err := dialMD5(ctx, fmt.Sprintf("%s:%d", s.PeerAddress, s.PeerPort), s.SourceAddress, s.Password)
+	peerAddr, err := netip.ParseAddr(s.PeerAddress)
+	if err != nil {
+		return fmt.Errorf("parse peer address %q: %w", s.PeerAddress, err)
+	}
+	conn, err := dialMD5(ctx, netip.AddrPortFrom(peerAddr, s.PeerPort), s.SourceAddress, s.Password)
 	if err != nil {
 		return fmt.Errorf("dial %q: %s", s.PeerAddress, err)
 	}
@@ -237,17 +241,12 @@ func (s *session) connect() error {
 		return fmt.Errorf("setting deadline on conn to %q: %s", s.PeerAddress, err)
 	}
 
-	addr, ok := conn.LocalAddr().(*net.TCPAddr)
+	addr, ok := AddrFromConn(conn.LocalAddr())
 	if !ok {
 		conn.Close()
-		return fmt.Errorf("getting local addr for default nexthop to %q: %s", s.PeerAddress, err)
+		return fmt.Errorf("can't get local addr for default nexthop %q", s.PeerAddress)
 	}
-	s.nextHop, ok = netip.AddrFromSlice(addr.IP)
-	if !ok {
-		conn.Close()
-		return fmt.Errorf("invalid local address %q", addr.IP)
-	}
-	s.nextHop = s.nextHop.Unmap()
+	s.nextHop = addr
 
 	routerID := s.RouterID
 	if !routerID.IsValid() {
@@ -320,7 +319,6 @@ func hashRouterID(hostname string) (netip.Addr, error) {
 // Ipv4; Use the address as-is.
 // Ipv6; Pick the first ipv4 address on the same interface as the address.
 func getRouterID(addr netip.Addr, myNode string) (netip.Addr, error) {
-	addr = addr.Unmap()
 	if addr.Is4() {
 		return addr, nil
 	}
@@ -335,7 +333,7 @@ func getRouterID(addr netip.Addr, myNode string) (netip.Addr, error) {
 			continue
 		}
 		for _, a := range addrs {
-			ip, ok := netipAddrFromNetAddr(a)
+			ip, ok := AddrFromInterface(a)
 			if !ok {
 				continue
 			}
@@ -344,8 +342,8 @@ func getRouterID(addr netip.Addr, myNode string) (netip.Addr, error) {
 				// This is the interface.
 				// Loop through the addresses again and search for ipv4
 				for _, a := range addrs {
-					ip, ok := netipAddrFromNetAddr(a)
-					if ok && ip.Unmap().Is4() {
+					ip, ok := AddrFromInterface(a)
+					if ok && ip.Is4() {
 						return ip, nil
 					}
 				}
@@ -546,12 +544,11 @@ func (s *session) Close() error {
 // proper TCP MD5 options when the password is not empty. Works by manipulating
 // the low level FD's, skipping the net.Conn API as it has not hooks to set
 // the necessary sockopts for TCP MD5.
-func dialMD5(ctx context.Context, addr string, srcAddr netip.Addr, password string) (net.Conn, error) {
-	// If srcAddr exists on any of the local network interfaces, use it as the
-	// source address of the TCP socket. Otherwise, use the IPv6 unspecified
-	// address ("::") to let the kernel figure out the source address.
-	// NOTE: On Linux, "::" also includes "0.0.0.0" (all IPv4 addresses).
-	a := "[::]"
+func dialMD5(ctx context.Context, raddr netip.AddrPort, srcAddr netip.Addr, password string) (net.Conn, error) {
+	var laddr netip.AddrPort
+
+	// Setup Local Address
+	// If srcAddr is configured, verify it exists on a local interface and use it.
 	if srcAddr.IsValid() {
 		ifs, err := net.Interfaces()
 		if err != nil {
@@ -561,49 +558,42 @@ func dialMD5(ctx context.Context, addr string, srcAddr netip.Addr, password stri
 		if !localAddressExists(ifs, srcAddr) {
 			return nil, fmt.Errorf("address %q doesn't exist on this host", srcAddr)
 		}
-
-		a = fmt.Sprintf("[%s]", srcAddr)
+		laddr = netip.AddrPortFrom(srcAddr, 0)
+	} else {
+		// Otherwise, use the unspecified address to let the kernel figure out the
+		// source address. We match the unspecified IP family to the remote address
+		// family to avoid panics when extracting bytes later.
+		if raddr.Addr().Is4() {
+			laddr = netip.AddrPortFrom(netip.IPv4Unspecified(), 0)
+		} else {
+			laddr = netip.AddrPortFrom(netip.IPv6Unspecified(), 0)
+		}
 	}
 
-	laddr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:0", a))
-	if err != nil {
-		return nil, fmt.Errorf("error resolving local address: %s ", err)
-	}
-
-	raddr, err := net.ResolveTCPAddr("tcp", addr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid remote address: %s ", err)
-	}
-
+	// Setup Unix Socket Addresses
 	var family int
 	var ra, la unix.Sockaddr
-	if raddr.IP.To4() != nil {
+	if raddr.Addr().Is4() {
 		family = unix.AF_INET
-		rsockaddr := &unix.SockaddrInet4{Port: raddr.Port}
-		copy(rsockaddr.Addr[:], raddr.IP.To4())
-		ra = rsockaddr
-		lsockaddr := &unix.SockaddrInet4{}
-		copy(lsockaddr.Addr[:], laddr.IP.To4())
-		la = lsockaddr
+		ra = &unix.SockaddrInet4{Port: int(raddr.Port()), Addr: raddr.Addr().As4()}
+		la = &unix.SockaddrInet4{Addr: laddr.Addr().As4()}
 	} else {
 		family = unix.AF_INET6
-		rsockaddr := &unix.SockaddrInet6{Port: raddr.Port}
-		copy(rsockaddr.Addr[:], raddr.IP.To16())
-		ra = rsockaddr
+		ra = &unix.SockaddrInet6{Port: int(raddr.Port()), Addr: raddr.Addr().As16()}
+
 		var zone uint32
-		if laddr.Zone != "" {
-			intf, errs := net.InterfaceByName(laddr.Zone)
+		if laddr.Addr().Zone() != "" {
+			intf, errs := net.InterfaceByName(laddr.Addr().Zone())
 			if errs != nil {
 				return nil, errs
 			}
+			var err error
 			zone, err = safeconvert.IntToUInt32(intf.Index)
 			if err != nil {
 				return nil, fmt.Errorf("invalid interface index %d", intf.Index)
 			}
 		}
-		lsockaddr := &unix.SockaddrInet6{ZoneId: zone}
-		copy(lsockaddr.Addr[:], laddr.IP.To16())
-		la = lsockaddr
+		la = &unix.SockaddrInet6{ZoneId: zone, Addr: laddr.Addr().As16()}
 	}
 
 	sockType := unix.SOCK_STREAM | unix.SOCK_CLOEXEC | unix.SOCK_NONBLOCK
@@ -628,7 +618,7 @@ func dialMD5(ctx context.Context, addr string, srcAddr netip.Addr, password stri
 	}()
 
 	if password != "" {
-		sig, err := buildTCPMD5Sig(raddr.IP, password)
+		sig, err := buildTCPMD5Sig(raddr.Addr(), password)
 		if err != nil {
 			return nil, err
 		}
@@ -711,14 +701,16 @@ func dialMD5(ctx context.Context, addr string, srcAddr netip.Addr, password stri
 	}
 }
 
-func buildTCPMD5Sig(addr net.IP, key string) (*unix.TCPMD5Sig, error) {
+func buildTCPMD5Sig(addr netip.Addr, key string) (*unix.TCPMD5Sig, error) {
 	t := unix.TCPMD5Sig{}
-	if addr.To4() != nil {
+	if addr.Is4() {
 		t.Addr.Family = unix.AF_INET
-		copy(t.Addr.Data[2:], addr.To4())
+		addr4 := addr.As4()
+		copy(t.Addr.Data[2:], addr4[:])
 	} else {
 		t.Addr.Family = unix.AF_INET6
-		copy(t.Addr.Data[6:], addr.To16())
+		addr16 := addr.As16()
+		copy(t.Addr.Data[6:], addr16[:])
 	}
 
 	var err error
@@ -741,7 +733,7 @@ func localAddressExists(ifs []net.Interface, addr netip.Addr) bool {
 		}
 
 		for _, a := range addresses {
-			ip, ok := netipAddrFromNetAddr(a)
+			ip, ok := AddrFromInterface(a)
 			if ok && ip == addr {
 				return true
 			}
@@ -751,15 +743,28 @@ func localAddressExists(ifs []net.Interface, addr netip.Addr) bool {
 	return false
 }
 
-func netipAddrFromNetAddr(a net.Addr) (netip.Addr, bool) {
-	switch v := a.(type) {
-	case *net.IPNet:
-		ip, ok := netip.AddrFromSlice(v.IP)
-		return ip.Unmap(), ok
-	case *net.IPAddr:
-		ip, ok := netip.AddrFromSlice(v.IP)
-		return ip.Unmap(), ok
-	default:
-		return netip.Addr{}, false
+// TODO PS any other places? move to common helper?
+// AddrFromInterface extracts a normalized netip.Addr from a network interface address.
+func AddrFromInterface(a net.Addr) (netip.Addr, bool) {
+	if v, ok := a.(*net.IPNet); ok {
+		if ip, ok := netip.AddrFromSlice(v.IP); ok {
+			return ip.Unmap(), true
+		}
 	}
+	return netip.Addr{}, false
+}
+
+// AddrFromConn extracts a normalized netip.Addr from an active connection endpoint.
+func AddrFromConn(a net.Addr) (netip.Addr, bool) {
+	switch v := a.(type) {
+	case *net.TCPAddr:
+		return v.AddrPort().Addr().Unmap(), true
+	case *net.UDPAddr:
+		return v.AddrPort().Addr().Unmap(), true
+	case *net.IPAddr:
+		if ip, ok := netip.AddrFromSlice(v.IP); ok {
+			return ip.Unmap(), true
+		}
+	}
+	return netip.Addr{}, false
 }
