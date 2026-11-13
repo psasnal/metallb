@@ -158,6 +158,7 @@ func newTestARP(t *testing.T, shouldAnnounce announceFunc) (*arpClient, *net.UDP
 		}
 		hasIPv4 := false
 		for _, addr := range addrs {
+			// TODO PS use common helper function AddrFromInterface
 			var ip netip.Addr
 			switch v := addr.(type) {
 			case *net.IPNet:

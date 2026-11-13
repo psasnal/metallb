@@ -743,7 +743,7 @@ func localAddressExists(ifs []net.Interface, addr netip.Addr) bool {
 	return false
 }
 
-// TODO PS any other places? move to common helper?
+// TODO PS any other places? move to common location?
 // AddrFromInterface extracts a normalized netip.Addr from a network interface address.
 func AddrFromInterface(a net.Addr) (netip.Addr, bool) {
 	if v, ok := a.(*net.IPNet); ok {
@@ -754,6 +754,7 @@ func AddrFromInterface(a net.Addr) (netip.Addr, bool) {
 	return netip.Addr{}, false
 }
 
+// TODO PS any other places? move to common location?
 // AddrFromConn extracts a normalized netip.Addr from an active connection endpoint.
 func AddrFromConn(a net.Addr) (netip.Addr, bool) {
 	switch v := a.(type) {

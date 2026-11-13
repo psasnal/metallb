@@ -46,6 +46,7 @@ type Announce struct {
 	ndps           map[int]ndpResponder
 	ips            map[string][]IPAdvertisement // svcName -> IPAdvertisements
 	ipRefcnt       map[string]int               // ip.String() -> number of uses
+	// TODO PS modify to map[netip.Addr]int ?
 
 	// This channel can block - do not write to it while holding the mutex
 	// to avoid deadlocking.
@@ -132,6 +133,7 @@ func (a *Announce) updateInterfaces() {
 		}
 
 		for _, a := range addrs {
+			// TODO PS use common helper function AddrFromInterface
 			ipaddr, ok := a.(*net.IPNet)
 			if !ok {
 				continue
